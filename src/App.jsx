@@ -4,6 +4,8 @@ import ManageView from './components/ManageView.jsx'
 import StatsView from './components/StatsView.jsx'
 import { seedIfEmpty, allCards } from './lib/db.js'
 import { isDue } from './lib/leitner.js'
+import { useInstall } from './lib/useInstall.js'
+import { syncReminders } from './lib/reminders.js'
 
 const TABS = [
   { id: 'review', label: 'Review', icon: '🃏' },
@@ -16,6 +18,8 @@ export default function App() {
   const [cards, setCards] = useState([])
   const [ready, setReady] = useState(false)
   const [settings, setSettings] = useState({ mode: 'de', topic: 'all', level: 'all' })
+  const [showInstallHelp, setShowInstallHelp] = useState(false)
+  const install = useInstall()
 
   async function refresh() {
     setCards(await allCards())
@@ -26,17 +30,26 @@ export default function App() {
       await seedIfEmpty()
       await refresh()
       setReady(true)
+      // Keep the rolling reminder schedule fresh (if the user enabled it).
+      syncReminders().catch(() => {})
     })()
   }, [])
 
-  const topics = useMemo(
-    () => [...new Set(cards.map((c) => c.topic))].sort((a, b) => a.localeCompare(b)),
-    [cards]
-  )
+  // Topics are scoped to the selected level: pick A1 and you only see A1 topics.
+  const topics = useMemo(() => {
+    const scoped =
+      settings.level === 'all' ? cards : cards.filter((c) => c.level === settings.level)
+    return [...new Set(scoped.map((c) => c.topic))].sort((a, b) => a.localeCompare(b))
+  }, [cards, settings.level])
   const levels = useMemo(
     () => [...new Set(cards.map((c) => c.level).filter(Boolean))].sort(),
     [cards]
   )
+
+  // Changing level resets the topic so a stale (out-of-level) topic can't linger.
+  function changeLevel(level) {
+    setSettings((s) => ({ ...s, level, topic: 'all' }))
+  }
   const dueCount = useMemo(
     () =>
       cards.filter(
@@ -60,9 +73,19 @@ export default function App() {
             <h1 className="font-display text-2xl text-ink tracking-tight">
               Karteikasten
             </h1>
-            <span className="text-xs text-brass-deep uppercase tracking-[0.2em]">
-              {dueCount} due
-            </span>
+            <div className="flex items-center gap-3">
+              {install.canShow && (
+                <button
+                  onClick={() => (install.canPrompt ? install.promptInstall() : setShowInstallHelp(true))}
+                  className="text-xs px-2.5 py-1 rounded-full bg-brass text-paper-card font-medium shadow-sm active:scale-95 transition"
+                >
+                  ⤓ Install
+                </button>
+              )}
+              <span className="text-xs text-brass-deep uppercase tracking-[0.2em]">
+                {dueCount} due
+              </span>
+            </div>
           </div>
 
           {view === 'review' && (
@@ -70,7 +93,7 @@ export default function App() {
               <select
                 className={select + ' flex-1'}
                 value={settings.level}
-                onChange={(e) => setSettings((s) => ({ ...s, level: e.target.value }))}
+                onChange={(e) => changeLevel(e.target.value)}
               >
                 <option value="all">All levels</option>
                 {levels.map((l) => (
@@ -134,6 +157,32 @@ export default function App() {
           ))}
         </div>
       </nav>
+
+      {/* iOS manual install instructions (no beforeinstallprompt on Safari) */}
+      {showInstallHelp && (
+        <div
+          className="fixed inset-0 z-50 bg-ink/50 flex items-end sm:items-center justify-center p-4"
+          onClick={() => setShowInstallHelp(false)}
+        >
+          <div
+            className="bg-paper-card rounded-2xl shadow-card max-w-sm w-full p-5 animate-pop"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="font-display text-xl text-ink mb-2">Add to Home Screen</h2>
+            <ol className="text-sm text-ink-soft space-y-2 list-decimal list-inside">
+              <li>Tap the <strong>Share</strong> button in Safari (the square with an ↑).</li>
+              <li>Scroll down and tap <strong>“Add to Home Screen”</strong>.</li>
+              <li>Tap <strong>Add</strong> — Karteikasten opens full-screen like an app.</li>
+            </ol>
+            <button
+              onClick={() => setShowInstallHelp(false)}
+              className="mt-4 w-full py-2.5 rounded-xl bg-ink text-paper-card font-medium active:scale-[0.98] transition"
+            >
+              Got it
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

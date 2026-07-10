@@ -10,6 +10,15 @@ import {
 } from '../lib/db.js'
 import { rowToCard } from '../lib/csv.js'
 import { startOfDay } from '../lib/leitner.js'
+import {
+  loadReminder,
+  saveReminder,
+  getPermission,
+  requestPermission,
+  scheduleDaily,
+  cancelDaily,
+  triggersSupported,
+} from '../lib/reminders.js'
 
 function newCard(fields) {
   return rowToCard(
@@ -33,6 +42,39 @@ export default function ManageView({ cards, onChanged }) {
   })
   const [query, setQuery] = useState('')
   const [topicFilter, setTopicFilter] = useState('all')
+  const [reminder, setReminder] = useState(loadReminder)
+  const remindersOk = triggersSupported()
+
+  async function setReminderEnabled(enabled) {
+    if (enabled) {
+      const perm = getPermission() === 'granted' ? 'granted' : await requestPermission()
+      if (perm !== 'granted') {
+        notify('Allow notifications to get reminders.')
+        return
+      }
+      const ok = await scheduleDaily(reminder.time)
+      const next = { ...reminder, enabled: true }
+      setReminder(next)
+      saveReminder(next)
+      notify(ok ? `Daily reminder set for ${reminder.time}.` : 'Reminder saved.')
+    } else {
+      await cancelDaily()
+      const next = { ...reminder, enabled: false }
+      setReminder(next)
+      saveReminder(next)
+      notify('Daily reminder turned off.')
+    }
+  }
+
+  async function setReminderTime(time) {
+    const next = { ...reminder, time }
+    setReminder(next)
+    saveReminder(next)
+    if (next.enabled && getPermission() === 'granted') {
+      await scheduleDaily(time)
+      notify(`Reminder moved to ${time}.`)
+    }
+  }
 
   const topics = useMemo(
     () => [...new Set(cards.map((c) => c.topic))].sort((a, b) => a.localeCompare(b)),
@@ -175,6 +217,47 @@ export default function ManageView({ cards, onChanged }) {
             Restore
           </button>
         </div>
+      </section>
+
+      {/* Daily study reminder */}
+      <section className="rounded-2xl bg-paper-card/70 ring-1 ring-ink/10 p-4">
+        <div className="flex items-center justify-between mb-1">
+          <h2 className="font-display text-xl text-ink">Daily reminder</h2>
+          <button
+            role="switch"
+            aria-checked={reminder.enabled}
+            disabled={!remindersOk}
+            onClick={() => setReminderEnabled(!reminder.enabled)}
+            className={`relative w-12 h-7 rounded-full transition disabled:opacity-40 ${
+              reminder.enabled ? 'bg-felt' : 'bg-ink/20'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-6 h-6 rounded-full bg-paper-card shadow transition-transform ${
+                reminder.enabled ? 'translate-x-5' : ''
+              }`}
+            />
+          </button>
+        </div>
+        <p className="text-sm text-ink-soft mb-3">
+          Get a notification each day to review your due cards.
+        </p>
+        <label className="flex items-center gap-3">
+          <span className="text-sm text-ink-soft">Remind me at</span>
+          <input
+            type="time"
+            value={reminder.time}
+            disabled={!remindersOk}
+            onChange={(e) => setReminderTime(e.target.value)}
+            className={`${field} max-w-[8rem] disabled:opacity-40`}
+          />
+        </label>
+        {!remindersOk && (
+          <p className="text-xs text-ink-faint mt-3">
+            Scheduled reminders work in the installed app on Android (Chrome). On iPhone,
+            the phone's own reminders/alarm app is the reliable option.
+          </p>
+        )}
       </section>
 
       {/* Add card */}

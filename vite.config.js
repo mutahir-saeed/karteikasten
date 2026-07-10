@@ -12,6 +12,8 @@ export default defineConfig({
         // Precache everything the app needs so it works fully offline after first load.
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // Add our notification-click handler into the generated service worker.
+        importScripts: ['/sw-notifications.js'],
       },
       manifest: {
         name: 'Karteikasten — German Flashcards',
