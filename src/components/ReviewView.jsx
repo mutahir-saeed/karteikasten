@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Flashcard from './Flashcard.jsx'
 import { applyAnswer, isDue } from '../lib/leitner.js'
+import { applyPacing } from '../lib/pacing.js'
 import { updateCard } from '../lib/db.js'
 
 const MODES = [
@@ -11,7 +12,16 @@ const MODES = [
   { id: 'mixed', label: 'Mixed' },
 ]
 
-export default function ReviewView({ cards, topic, level, mode, onSettings, onReviewed }) {
+export default function ReviewView({
+  cards,
+  releasedSet,
+  deck,
+  topic,
+  level,
+  mode,
+  onSettings,
+  onReviewed,
+}) {
   // Build the due queue for the current filters. Frozen at session start so
   // answered cards (which get a future dueDate) don't vanish mid-shuffle.
   const [queue, setQueue] = useState([])
@@ -19,13 +29,15 @@ export default function ReviewView({ cards, topic, level, mode, onSettings, onRe
   const [session, setSession] = useState({ correct: 0, wrong: 0 })
 
   const dueList = useMemo(() => {
-    return cards.filter(
+    // For the Sätze deck, hide verbs that today's pacer hasn't released yet.
+    const pool = releasedSet ? applyPacing(cards, releasedSet) : cards
+    return pool.filter(
       (c) =>
         isDue(c) &&
         (topic === 'all' || c.topic === topic) &&
         (level === 'all' || c.level === level)
     )
-  }, [cards, topic, level])
+  }, [cards, releasedSet, topic, level])
 
   function startSession() {
     // shuffle
@@ -35,11 +47,11 @@ export default function ReviewView({ cards, topic, level, mode, onSettings, onRe
     setSession({ correct: 0, wrong: 0 })
   }
 
-  // (Re)build the queue whenever filters change or we finish.
+  // (Re)build the queue whenever filters or the released set change.
   useEffect(() => {
     startSession()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topic, level])
+  }, [topic, level, releasedSet])
 
   async function handleAnswer(correct) {
     const card = queue[idx]
@@ -85,8 +97,9 @@ export default function ReviewView({ cards, topic, level, mode, onSettings, onRe
               <>
                 <h2 className="font-display text-2xl text-ink mb-2">All caught up</h2>
                 <p className="text-ink-soft">
-                  No cards due right now for this filter. Come back when your boxes are ready,
-                  or pick another topic.
+                  {deck === 'saetze'
+                    ? "You've cleared today's verbs. Come back tomorrow for 7 new ones — anything you missed returns on its Leitner schedule."
+                    : 'No cards due right now for this filter. Come back when your boxes are ready, or pick another topic.'}
                 </p>
               </>
             ) : (

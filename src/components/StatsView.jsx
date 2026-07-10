@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import { BOX_COUNT, isDue, intervalLabel } from '../lib/leitner.js'
+import { applyPacing } from '../lib/pacing.js'
 
 function Stat({ label, value, accent }) {
   return (
@@ -10,28 +11,37 @@ function Stat({ label, value, accent }) {
   )
 }
 
-export default function StatsView({ cards }) {
+export default function StatsView({ cards, deck = 'vocab', releasedSet }) {
+  const isSaetze = deck === 'saetze'
+
   const s = useMemo(() => {
+    // For Sätze, stats reflect the cards actually in play (released verbs).
+    const active = isSaetze && releasedSet ? applyPacing(cards, releasedSet) : cards
     const perBox = [0, 0, 0, 0, 0]
     let due = 0
-    for (const c of cards) {
+    for (const c of active) {
       perBox[Math.min(c.box, BOX_COUNT) - 1]++
       if (isDue(c)) due++
     }
     const topics = new Set(cards.map((c) => c.topic))
+    const allVerbs = new Set(cards.map((c) => c.lemma).filter(Boolean))
+    const introducedVerbs = releasedSet ? releasedSet.size : allVerbs.size
     // "Struggling": stuck in Box 1 but reviewed before -> got it wrong at least once.
-    const struggling = cards
+    const struggling = active
       .filter((c) => c.box === 1 && c.lastReviewed)
       .sort((a, b) => new Date(b.lastReviewed) - new Date(a.lastReviewed))
     return {
       perBox,
       due,
+      activeTotal: active.length,
       total: cards.length,
       topics: topics.size,
+      verbs: allVerbs.size,
+      introducedVerbs,
       mastered: perBox[BOX_COUNT - 1],
       struggling,
     }
-  }, [cards])
+  }, [cards, isSaetze, releasedSet])
 
   const maxBox = Math.max(1, ...s.perBox)
 
@@ -39,9 +49,19 @@ export default function StatsView({ cards }) {
     <div className="px-4 py-4 max-w-md mx-auto space-y-6">
       <div className="grid grid-cols-2 gap-3">
         <Stat label="Due today" value={s.due} accent="text-brass-deep" />
-        <Stat label="Total cards" value={s.total} />
-        <Stat label="Topics" value={s.topics} />
-        <Stat label="Mastered · Box 5" value={s.mastered} accent="text-felt" />
+        {isSaetze ? (
+          <>
+            <Stat label="Verbs unlocked" value={`${s.introducedVerbs}/${s.verbs}`} />
+            <Stat label="Sentences in play" value={s.activeTotal} />
+            <Stat label="Mastered · Box 5" value={s.mastered} accent="text-felt" />
+          </>
+        ) : (
+          <>
+            <Stat label="Total cards" value={s.total} />
+            <Stat label="Topics" value={s.topics} />
+            <Stat label="Mastered · Box 5" value={s.mastered} accent="text-felt" />
+          </>
+        )}
       </div>
 
       {/* Per-box bar chart */}
@@ -65,7 +85,7 @@ export default function StatsView({ cards }) {
       {/* Struggling words */}
       <section className="rounded-2xl bg-paper-card/70 ring-1 ring-ink/10 p-4">
         <h2 className="font-display text-xl text-ink mb-1">
-          Words to watch · {s.struggling.length}
+          {isSaetze ? 'Sentences' : 'Words'} to watch · {s.struggling.length}
         </h2>
         <p className="text-sm text-ink-soft mb-3">
           Reset to Box 1 after a wrong answer — these are the ones not sticking yet.

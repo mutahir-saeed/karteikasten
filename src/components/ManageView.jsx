@@ -7,9 +7,9 @@ import {
   resetAllBoxes,
   restoreCards,
   allCards,
+  clearPacer,
 } from '../lib/db.js'
 import { rowToCard } from '../lib/csv.js'
-import { startOfDay } from '../lib/leitner.js'
 import {
   loadReminder,
   saveReminder,
@@ -20,7 +20,7 @@ import {
   triggersSupported,
 } from '../lib/reminders.js'
 
-function newCard(fields) {
+function newCard(fields, deck) {
   return rowToCard(
     {
       german: fields.german,
@@ -28,17 +28,19 @@ function newCard(fields) {
       urdu: fields.urdu,
       topic: fields.topic,
       type: fields.type,
+      lemma: fields.lemma,
     },
-    fields.level || ''
+    { level: fields.level || '', deck }
   )
 }
 
-export default function ManageView({ cards, onChanged }) {
+export default function ManageView({ deck = 'vocab', cards, onChanged }) {
+  const isSaetze = deck === 'saetze'
   const fileRef = useRef(null)
   const restoreRef = useRef(null)
   const [flash, setFlash] = useState(null)
   const [form, setForm] = useState({
-    german: '', english: '', urdu: '', topic: '', level: '', type: 'word',
+    german: '', english: '', urdu: '', topic: '', level: '', type: 'word', lemma: '',
   })
   const [query, setQuery] = useState('')
   const [topicFilter, setTopicFilter] = useState('all')
@@ -95,7 +97,7 @@ export default function ManageView({ cards, onChanged }) {
       const text = await file.text()
       // Try to infer level from filename (e.g. A1_..., B2 ...).
       const lvl = (file.name.match(/\b([ABC][12])\b/i) || [])[1]?.toUpperCase() || ''
-      const parsed = parseCsvToCards(text, lvl)
+      const parsed = parseCsvToCards(text, { level: lvl, deck })
       const res = await importCardsDeduped(parsed)
       added += res.added
       skipped += res.skipped
@@ -107,13 +109,16 @@ export default function ManageView({ cards, onChanged }) {
 
   async function handleAdd(e) {
     e.preventDefault()
-    const card = newCard(form)
+    const card = newCard(form, deck)
     if (!card) {
       notify('Enter at least one language.')
       return
     }
     await addCards([card])
-    setForm({ german: '', english: '', urdu: '', topic: form.topic, level: form.level, type: 'word' })
+    setForm({
+      german: '', english: '', urdu: '', topic: form.topic, level: form.level,
+      type: isSaetze ? 'sentence' : 'word', lemma: '',
+    })
     notify('Card added to Box 1.')
     onChanged()
   }
@@ -153,8 +158,12 @@ export default function ManageView({ cards, onChanged }) {
   }
 
   async function handleReset() {
-    if (!confirm('Send every card back to Box 1? Your review progress will be cleared.')) return
-    const n = await resetAllBoxes()
+    const label = isSaetze ? 'sentence cards' : 'word cards'
+    const extra = isSaetze ? ' The daily verb schedule restarts too.' : ''
+    if (!confirm(`Send all ${label} back to Box 1? Your review progress will be cleared.${extra}`))
+      return
+    const n = await resetAllBoxes(deck)
+    if (isSaetze) await clearPacer()
     notify(`Reset ${n} cards to Box 1.`)
     onChanged()
   }
@@ -185,10 +194,13 @@ export default function ManageView({ cards, onChanged }) {
 
       {/* CSV import */}
       <section className="rounded-2xl bg-paper-card/70 ring-1 ring-ink/10 p-4">
-        <h2 className="font-display text-xl text-ink mb-1">Import CSV</h2>
+        <h2 className="font-display text-xl text-ink mb-1">
+          Import CSV → {isSaetze ? 'Sätze' : 'Wörter'}
+        </h2>
         <p className="text-sm text-ink-soft mb-3">
-          Columns auto-detected (case-insensitive): german/deutsch, english, urdu, topic/category, type.
-          You can select multiple files.
+          Columns auto-detected (case-insensitive): german/deutsch, english, urdu, topic/category,
+          type{isSaetze ? ', lemma/verb' : ''}. Files import into the{' '}
+          <strong>{isSaetze ? 'Sätze' : 'Wörter'}</strong> deck. You can select multiple files.
         </p>
         <input ref={fileRef} type="file" accept=".csv" multiple onChange={handleFile} className="hidden" />
         <button
@@ -262,7 +274,9 @@ export default function ManageView({ cards, onChanged }) {
 
       {/* Add card */}
       <section className="rounded-2xl bg-paper-card/70 ring-1 ring-ink/10 p-4">
-        <h2 className="font-display text-xl text-ink mb-3">Add a card</h2>
+        <h2 className="font-display text-xl text-ink mb-3">
+          Add a {isSaetze ? 'sentence' : 'card'}
+        </h2>
         <form onSubmit={handleAdd} className="space-y-2.5">
           <input className={field} placeholder="German / Deutsch" value={form.german}
             onChange={(e) => setForm({ ...form, german: e.target.value })} />
@@ -270,6 +284,10 @@ export default function ManageView({ cards, onChanged }) {
             onChange={(e) => setForm({ ...form, english: e.target.value })} />
           <input className={`${field} font-urdu text-right`} dir="rtl" placeholder="اردو" value={form.urdu}
             onChange={(e) => setForm({ ...form, urdu: e.target.value })} />
+          {isSaetze && (
+            <input className={field} placeholder="Verb / Lemma (e.g. gehen)" value={form.lemma}
+              onChange={(e) => setForm({ ...form, lemma: e.target.value })} />
+          )}
           <div className="grid grid-cols-2 gap-2.5">
             <input className={field} placeholder="Topic" value={form.topic}
               onChange={(e) => setForm({ ...form, topic: e.target.value })} />
@@ -291,7 +309,9 @@ export default function ManageView({ cards, onChanged }) {
       {/* Deck list */}
       <section className="rounded-2xl bg-paper-card/70 ring-1 ring-ink/10 p-4">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="font-display text-xl text-ink">Deck · {cards.length}</h2>
+          <h2 className="font-display text-xl text-ink">
+            {isSaetze ? 'Sätze' : 'Wörter'} · {cards.length}
+          </h2>
           <button onClick={handleReset}
             className="text-sm px-3 py-1.5 rounded-lg border border-rust/40 text-rust active:scale-95 transition">
             Reset all boxes

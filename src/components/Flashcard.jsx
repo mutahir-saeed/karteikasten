@@ -26,6 +26,20 @@ export function facesForCard(card, mode) {
   return { frontLangs, backLangs }
 }
 
+// Scale text down as it gets longer so full sentences still fit the card.
+function sizeFor(text, big) {
+  const len = (text || '').length
+  if (big) {
+    if (len <= 16) return 'text-3xl sm:text-4xl'
+    if (len <= 34) return 'text-2xl sm:text-3xl'
+    if (len <= 70) return 'text-xl sm:text-2xl'
+    return 'text-lg sm:text-xl'
+  }
+  if (len <= 40) return 'text-2xl'
+  if (len <= 80) return 'text-xl'
+  return 'text-lg'
+}
+
 function LangLine({ lang, text, big }) {
   const meta = LANG_META[lang]
   if (!text) {
@@ -41,8 +55,8 @@ function LangLine({ lang, text, big }) {
         {meta.label}
       </div>
       <div
-        className={`${big ? 'text-3xl sm:text-4xl' : 'text-2xl'} leading-snug text-ink ${
-          lang === 'ur' ? 'leading-[2]' : ''
+        className={`${sizeFor(text, big)} leading-snug text-ink ${
+          lang === 'ur' ? 'leading-[1.9]' : ''
         }`}
       >
         {text}

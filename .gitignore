@@ -5,3 +5,4 @@ dist-ssr
 .DS_Store
 .vite
 dev-dist
+vite.config.js.timestamp-*

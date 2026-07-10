@@ -1,30 +1,59 @@
 import Dexie from 'dexie'
-import { loadBundledCards } from './csv.js'
+import { loadBundledCards, loadSaetzeCards } from './csv.js'
 import { startOfDay } from './leitner.js'
 
 // Persistent store. IndexedDB survives app restarts and works offline.
 export const db = new Dexie('karteikasten')
 
 db.version(1).stores({
-  // Primary key id; indexes on the fields we query/filter by.
   cards: 'id, box, topic, level, dueDate, type',
   meta: 'key',
 })
 
-// Seed the bundled decks the first time the app runs. Idempotent via a meta flag.
+// v2 adds the `deck` field ('vocab' | 'saetze') so the sentence module lives
+// alongside the word deck. Existing installs are migrated in place: their cards
+// predate `deck`/`lemma`/`seq`, so we backfill them as vocabulary.
+db.version(2)
+  .stores({
+    cards: 'id, box, topic, level, dueDate, type, deck',
+    meta: 'key',
+  })
+  .upgrade(async (tx) => {
+    await tx
+      .table('cards')
+      .toCollection()
+      .modify((c) => {
+        if (!c.deck) c.deck = 'vocab'
+        if (c.lemma == null) c.lemma = (c.german || '').toLowerCase().trim()
+        if (c.seq == null) c.seq = 0
+      })
+  })
+
+// Seed the bundled word deck the first time the app runs. Idempotent.
 export async function seedIfEmpty() {
   const seeded = await db.meta.get('seeded')
-  const count = await db.cards.count()
-  if (seeded && count > 0) return { seeded: false, count }
+  const vocabCount = await db.cards.where('deck').equals('vocab').count()
+  if (seeded && vocabCount > 0) return { seeded: false, count: vocabCount }
 
-  if (count === 0) {
+  if (vocabCount === 0) {
     const cards = loadBundledCards()
     if (cards.length) await db.cards.bulkAdd(cards)
     await db.meta.put({ key: 'seeded', value: true, at: new Date().toISOString() })
     return { seeded: true, count: cards.length }
   }
   await db.meta.put({ key: 'seeded', value: true, at: new Date().toISOString() })
-  return { seeded: false, count }
+  return { seeded: false, count: vocabCount }
+}
+
+// Seed the Sätze (verb-sentence) deck. Runs independently of the word deck so
+// existing installs pick up the new deck on their next update.
+export async function seedSaetzeIfEmpty() {
+  const existing = await db.cards.where('deck').equals('saetze').count()
+  if (existing > 0) return { seeded: false, count: existing }
+  const cards = loadSaetzeCards()
+  // bulkPut + deterministic ids => idempotent even if this races with itself.
+  if (cards.length) await db.cards.bulkPut(cards)
+  return { seeded: cards.length > 0, count: cards.length }
 }
 
 export async function allCards() {
@@ -62,10 +91,12 @@ export async function deleteCard(id) {
   await db.cards.delete(id)
 }
 
-// Reset every card back to Box 1, due today.
-export async function resetAllBoxes() {
+// Reset cards back to Box 1, due today. Optionally scope to one deck.
+export async function resetAllBoxes(deck = null) {
   const today = startOfDay(new Date()).toISOString()
-  const cards = await db.cards.toArray()
+  const cards = deck
+    ? await db.cards.where('deck').equals(deck).toArray()
+    : await db.cards.toArray()
   const updated = cards.map((c) => ({
     ...c,
     box: 1,
@@ -76,21 +107,32 @@ export async function resetAllBoxes() {
   return updated.length
 }
 
-// Merge a backup (array of cards) into the store, overwriting by id and adding
-// any new ones. Returns how many were written.
+// Merge a backup (array of cards) into the store, overwriting by id.
 export async function restoreCards(cards) {
   if (!Array.isArray(cards) || !cards.length) return 0
-  // Only keep records that look like cards.
   const valid = cards.filter((c) => c && c.id && (c.german || c.english || c.urdu))
   await db.cards.bulkPut(valid)
-  // Ensure the seed flag is set so we don't re-seed over a restore.
   await db.meta.put({ key: 'seeded', value: true, at: new Date().toISOString() })
   return valid.length
 }
 
+// --- Sätze daily-pacer state (which verbs have been released) ---------------
+const PACER_KEY = 'saetze-pacer'
+
+export async function getPacerState() {
+  const rec = await db.meta.get(PACER_KEY)
+  return rec?.state || null
+}
+
+export async function savePacerState(state) {
+  await db.meta.put({ key: PACER_KEY, state, at: new Date().toISOString() })
+}
+
+export async function clearPacer() {
+  await db.meta.delete(PACER_KEY)
+}
+
 export async function getTopics() {
   const cards = await db.cards.toArray()
-  return [...new Set(cards.map((c) => c.topic))].sort((a, b) =>
-    a.localeCompare(b)
-  )
+  return [...new Set(cards.map((c) => c.topic))].sort((a, b) => a.localeCompare(b))
 }

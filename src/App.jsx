@@ -2,8 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import ReviewView from './components/ReviewView.jsx'
 import ManageView from './components/ManageView.jsx'
 import StatsView from './components/StatsView.jsx'
-import { seedIfEmpty, allCards } from './lib/db.js'
+import {
+  seedIfEmpty,
+  seedSaetzeIfEmpty,
+  allCards,
+  getPacerState,
+  savePacerState,
+} from './lib/db.js'
 import { isDue } from './lib/leitner.js'
+import { computeRelease, applyPacing, countWaitingGroups } from './lib/pacing.js'
 import { useInstall } from './lib/useInstall.js'
 import { syncReminders } from './lib/reminders.js'
 
@@ -13,56 +20,98 @@ const TABS = [
   { id: 'stats', label: 'Stats', icon: '📊' },
 ]
 
+// How many brand-new verbs the Sätze module introduces each day.
+const DAILY_NEW_VERBS = 7
+
 export default function App() {
   const [view, setView] = useState('review')
+  const [deck, setDeck] = useState('vocab') // 'vocab' | 'saetze'
   const [cards, setCards] = useState([])
   const [ready, setReady] = useState(false)
+  const [released, setReleased] = useState(null) // Set of released verb keys (Sätze)
+  const [waitingVerbs, setWaitingVerbs] = useState(0)
   const [settings, setSettings] = useState({ mode: 'de', topic: 'all', level: 'all' })
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const install = useInstall()
 
   async function refresh() {
-    setCards(await allCards())
+    const all = await allCards()
+    setCards(all)
+    return all
+  }
+
+  // Release the day's new verbs for the Sätze deck (Anki-style new-card pacing).
+  async function runPacer(all) {
+    const saetze = all.filter((c) => (c.deck || 'vocab') === 'saetze')
+    if (!saetze.length) {
+      setReleased(new Set())
+      setWaitingVerbs(0)
+      return
+    }
+    const state = await getPacerState()
+    const { releasedSet, nextState } = computeRelease(saetze, state, DAILY_NEW_VERBS)
+    await savePacerState(nextState)
+    setReleased(releasedSet)
+    setWaitingVerbs(countWaitingGroups(saetze, releasedSet))
   }
 
   useEffect(() => {
     ;(async () => {
       await seedIfEmpty()
-      await refresh()
+      await seedSaetzeIfEmpty()
+      const all = await refresh()
+      await runPacer(all)
       setReady(true)
-      // Keep the rolling reminder schedule fresh (if the user enabled it).
       syncReminders().catch(() => {})
     })()
   }, [])
 
-  // Topics are scoped to the selected level: pick A1 and you only see A1 topics.
-  const topics = useMemo(() => {
-    const scoped =
-      settings.level === 'all' ? cards : cards.filter((c) => c.level === settings.level)
-    return [...new Set(scoped.map((c) => c.topic))].sort((a, b) => a.localeCompare(b))
-  }, [cards, settings.level])
-  const levels = useMemo(
-    () => [...new Set(cards.map((c) => c.level).filter(Boolean))].sort(),
-    [cards]
+  const deckCards = useMemo(
+    () => cards.filter((c) => (c.deck || 'vocab') === deck),
+    [cards, deck]
   )
 
-  // Changing level resets the topic so a stale (out-of-level) topic can't linger.
+  const releasedForDeck = deck === 'saetze' ? released : null
+
+  // Cards actually visible right now (Sätze hides not-yet-released verbs).
+  const visibleCards = useMemo(() => {
+    if (deck === 'saetze' && released) return applyPacing(deckCards, released)
+    return deckCards
+  }, [deckCards, deck, released])
+
+  const topics = useMemo(() => {
+    const scoped =
+      settings.level === 'all' ? deckCards : deckCards.filter((c) => c.level === settings.level)
+    return [...new Set(scoped.map((c) => c.topic))].sort((a, b) => a.localeCompare(b))
+  }, [deckCards, settings.level])
+
+  const levels = useMemo(
+    () => [...new Set(deckCards.map((c) => c.level).filter(Boolean))].sort(),
+    [deckCards]
+  )
+
   function changeLevel(level) {
     setSettings((s) => ({ ...s, level, topic: 'all' }))
   }
+
+  function changeDeck(next) {
+    setDeck(next)
+    setSettings((s) => ({ ...s, topic: 'all', level: 'all' }))
+  }
+
   const dueCount = useMemo(
     () =>
-      cards.filter(
+      visibleCards.filter(
         (c) =>
           isDue(c) &&
           (settings.topic === 'all' || c.topic === settings.topic) &&
           (settings.level === 'all' || c.level === settings.level)
       ).length,
-    [cards, settings.topic, settings.level]
+    [visibleCards, settings.topic, settings.level]
   )
 
   const select =
-    'rounded-lg border border-ink/15 bg-paper-card/80 px-2.5 py-1.5 text-sm text-ink-soft focus:outline-none focus:ring-2 focus:ring-brass/40 max-w-[48%]'
+    'rounded-lg border border-ink/15 bg-paper-card/80 px-2.5 py-1.5 text-sm text-ink-soft focus:outline-none focus:ring-2 focus:ring-brass/40'
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -70,13 +119,13 @@ export default function App() {
       <header className="safe-top sticky top-0 z-30 bg-paper/85 backdrop-blur border-b border-ink/10">
         <div className="max-w-md mx-auto px-4 pt-3 pb-2">
           <div className="flex items-baseline justify-between">
-            <h1 className="font-display text-2xl text-ink tracking-tight">
-              Karteikasten
-            </h1>
+            <h1 className="font-display text-2xl text-ink tracking-tight">Karteikasten</h1>
             <div className="flex items-center gap-3">
               {install.canShow && (
                 <button
-                  onClick={() => (install.canPrompt ? install.promptInstall() : setShowInstallHelp(true))}
+                  onClick={() =>
+                    install.canPrompt ? install.promptInstall() : setShowInstallHelp(true)
+                  }
                   className="text-xs px-2.5 py-1 rounded-full bg-brass text-paper-card font-medium shadow-sm active:scale-95 transition"
                 >
                   ⤓ Install
@@ -88,8 +137,29 @@ export default function App() {
             </div>
           </div>
 
+          {/* Deck switch: words vs. verb sentences */}
+          <div className="mt-2 grid grid-cols-2 gap-1 bg-paper-deep/60 rounded-xl p-1">
+            {[
+              { id: 'vocab', label: 'Wörter', sub: 'words' },
+              { id: 'saetze', label: 'Sätze', sub: 'verb sentences' },
+            ].map((d) => (
+              <button
+                key={d.id}
+                onClick={() => changeDeck(d.id)}
+                className={`py-1.5 rounded-lg text-sm font-medium transition ${
+                  deck === d.id
+                    ? 'bg-paper-card text-ink shadow-sm'
+                    : 'text-ink-soft'
+                }`}
+              >
+                {d.label}
+                <span className="block text-[10px] font-normal text-ink-faint">{d.sub}</span>
+              </button>
+            ))}
+          </div>
+
           {view === 'review' && (
-            <div className="flex gap-2 mt-2">
+            <div className="flex items-center gap-2 mt-2">
               <select
                 className={select + ' flex-1'}
                 value={settings.level}
@@ -97,19 +167,29 @@ export default function App() {
               >
                 <option value="all">All levels</option>
                 {levels.map((l) => (
-                  <option key={l} value={l}>{l}</option>
+                  <option key={l} value={l}>
+                    {l}
+                  </option>
                 ))}
               </select>
-              <select
-                className={select + ' flex-1'}
-                value={settings.topic}
-                onChange={(e) => setSettings((s) => ({ ...s, topic: e.target.value }))}
-              >
-                <option value="all">All topics</option>
-                {topics.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+              {deck === 'vocab' ? (
+                <select
+                  className={select + ' flex-1'}
+                  value={settings.topic}
+                  onChange={(e) => setSettings((s) => ({ ...s, topic: e.target.value }))}
+                >
+                  <option value="all">All topics</option>
+                  {topics.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <span className="flex-1 text-center text-xs text-ink-faint px-2 py-1.5 rounded-lg bg-paper-card/60 border border-ink/10">
+                  {waitingVerbs} verbs left to unlock
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -124,7 +204,11 @@ export default function App() {
           </div>
         ) : view === 'review' ? (
           <ReviewView
-            cards={cards}
+            key={deck}
+            cards={deckCards}
+            releasedSet={releasedForDeck}
+            deck={deck}
+            dailyNew={DAILY_NEW_VERBS}
             topic={settings.topic}
             level={settings.level}
             mode={settings.mode}
@@ -132,9 +216,14 @@ export default function App() {
             onReviewed={refresh}
           />
         ) : view === 'manage' ? (
-          <ManageView cards={cards} onChanged={refresh} />
+          <ManageView deck={deck} cards={deckCards} onChanged={refresh} />
         ) : (
-          <StatsView cards={cards} />
+          <StatsView
+            deck={deck}
+            cards={deckCards}
+            releasedSet={releasedForDeck}
+            dailyNew={DAILY_NEW_VERBS}
+          />
         )}
       </main>
 
@@ -170,9 +259,15 @@ export default function App() {
           >
             <h2 className="font-display text-xl text-ink mb-2">Add to Home Screen</h2>
             <ol className="text-sm text-ink-soft space-y-2 list-decimal list-inside">
-              <li>Tap the <strong>Share</strong> button in Safari (the square with an ↑).</li>
-              <li>Scroll down and tap <strong>“Add to Home Screen”</strong>.</li>
-              <li>Tap <strong>Add</strong> — Karteikasten opens full-screen like an app.</li>
+              <li>
+                Tap the <strong>Share</strong> button in Safari (the square with an ↑).
+              </li>
+              <li>
+                Scroll down and tap <strong>“Add to Home Screen”</strong>.
+              </li>
+              <li>
+                Tap <strong>Add</strong> — Karteikasten opens full-screen like an app.
+              </li>
             </ol>
             <button
               onClick={() => setShowInstallHelp(false)}
