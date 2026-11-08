@@ -1,5 +1,6 @@
 import Papa from 'papaparse'
 import { startOfDay } from './leitner.js'
+import { parseTags } from './facets.js'
 
 // Case-insensitive column aliases -> canonical field.
 const COLUMN_ALIASES = {
@@ -20,6 +21,16 @@ const COLUMN_ALIASES = {
   lemma: 'lemma',
   grundform: 'lemma',
   verb: 'lemma',
+  // Facet tags, as `dimension:value` pairs separated by ';'. This is what
+  // drives every filter row except the level one.
+  tags: 'tags',
+  schlagworte: 'tags',
+  // Präteritum / Partizip II, and the one-line note from the grammar sheets.
+  forms: 'forms',
+  formen: 'forms',
+  note: 'note',
+  notiz: 'note',
+  hinweis: 'note',
 }
 
 function normalizeHeader(h) {
@@ -31,7 +42,8 @@ function normalizeHeader(h) {
 
 // Build a map from a parsed row (using original headers) to canonical fields.
 function mapRow(row) {
-  const out = { german: '', english: '', urdu: '', topic: '', type: '', lemma: '' }
+  const out = { german: '', english: '', urdu: '', topic: '', type: '', lemma: '',
+    tags: '', forms: '', note: '' }
   for (const key of Object.keys(row)) {
     const canonical = COLUMN_ALIASES[normalizeHeader(key)]
     if (canonical && !out[canonical]) {
@@ -66,8 +78,13 @@ export function rowToCard(mapped, opts = {}) {
     urdu,
     topic: mapped.topic || 'Uncategorized',
     level,
+    levels: level ? [level] : [],
     type,
     deck,
+    // Structural and semantic grouping: see lib/facets.js.
+    facets: parseTags(mapped.tags),
+    forms: mapped.forms || '',
+    note: mapped.note || '',
     // The verb this card trains (for the daily pacer). Falls back to the German
     // text so plain word cards remain self-grouped.
     lemma: (mapped.lemma || german || '').toLowerCase().trim(),
@@ -102,22 +119,66 @@ const deckModules = import.meta.glob('../decks/**/*.csv', {
   eager: true,
 })
 
-// Returns all bundled word cards, deduped by german|english|urdu.
+// One card per German word, merged across every bundled file.
+//
+// The same verb legitimately appears in several sheets: `abholen` is an A1
+// word, a trennbares Verb and a Kurs DaF Lektion 1 item. Keeping three cards
+// would mean answering it three times, so instead the rows merge into one card
+// that carries all of their facets, all of their levels and the richest
+// teaching data of the three.
+function mergeCards(a, b) {
+  const longer = (x, y) => ((x || '').length >= (y || '').length ? x || y : y || x) || ''
+  const union = (x = [], y = []) => [...new Set([...x, ...y])]
+  const english =
+    a.english && b.english && !a.english.toLowerCase().includes(b.english.toLowerCase())
+      ? b.english.toLowerCase().includes(a.english.toLowerCase())
+        ? b.english
+        : `${a.english} / ${b.english}`
+      : longer(a.english, b.english)
+  const facets = { ...a.facets }
+  for (const dim of Object.keys(b.facets || {})) {
+    facets[dim] = union(facets[dim], b.facets[dim])
+  }
+  return {
+    ...a,
+    english,
+    urdu: longer(a.urdu, b.urdu),
+    // The richer sheet names the topic: a meaning field beats "Uncategorized".
+    topic: a.topic && a.topic !== 'Uncategorized' ? a.topic : b.topic,
+    levels: union(a.levels, b.levels),
+    facets,
+    forms: longer(a.forms, b.forms),
+    note: longer(a.note, b.note),
+    lemma: a.lemma || b.lemma,
+  }
+}
+
+// Returns all bundled word cards, one per German word.
 export function loadBundledCards() {
-  const seen = new Set()
-  const all = []
-  for (const path in deckModules) {
+  const byWord = new Map()
+  const order = []
+  for (const path of Object.keys(deckModules).sort()) {
     const m = path.match(/decks\/([^/]+)\//)
     const level = m ? m[1] : ''
-    const cards = parseCsvToCards(deckModules[path], { level, deck: 'vocab' })
-    for (const card of cards) {
-      const key = `${card.german}|${card.english}|${card.urdu}`.toLowerCase()
-      if (seen.has(key)) continue
-      seen.add(key)
-      all.push(card)
+    for (const card of parseCsvToCards(deckModules[path], { level, deck: 'vocab' })) {
+      const key = card.german.trim().toLowerCase()
+      if (!key) continue
+      if (!byWord.has(key)) {
+        byWord.set(key, card)
+        order.push(key)
+      } else {
+        byWord.set(key, mergeCards(byWord.get(key), card))
+      }
     }
   }
-  all.forEach((c, i) => (c.seq = i))
+  const all = order.map((k) => byWord.get(k))
+  all.forEach((c, i) => {
+    c.seq = i
+    // Content-derived id: seeding and syncing become idempotent, so a double
+    // mount (React StrictMode in dev, or a reload mid-seed) can't insert the
+    // same word twice.
+    c.id = `v:${c.german.trim().toLowerCase()}`
+  })
   return all
 }
 

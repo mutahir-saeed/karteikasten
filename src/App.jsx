@@ -2,13 +2,21 @@ import { useEffect, useMemo, useState } from 'react'
 import ReviewView from './components/ReviewView.jsx'
 import ManageView from './components/ManageView.jsx'
 import StatsView from './components/StatsView.jsx'
+import FilterSheet from './components/FilterSheet.jsx'
 import {
   seedIfEmpty,
   seedSaetzeIfEmpty,
+  syncBundledVocab,
+  syncBundledSaetze,
+  archiveUnbundled,
+  countArchived,
+  restoreArchived,
+  deleteArchived,
   allCards,
   getPacerState,
   savePacerState,
 } from './lib/db.js'
+import { buildIndex, matches, countSelected, DIM_LABEL } from './lib/facets.js'
 import { isDue } from './lib/leitner.js'
 import { computeRelease, applyPacing, countWaitingGroups } from './lib/pacing.js'
 import { useInstall } from './lib/useInstall.js'
@@ -23,6 +31,24 @@ const TABS = [
 // How many brand-new verbs the Sätze module introduces each day.
 const DAILY_NEW_VERBS = 7
 
+// Seeding runs once per page load even if the component mounts twice (React
+// StrictMode does exactly that in development).
+let bootOnce = null
+function boot() {
+  if (!bootOnce) {
+    bootOnce = (async () => {
+      await seedIfEmpty()
+      await seedSaetzeIfEmpty()
+      // Deck files added by an app update land here, progress untouched.
+      await syncBundledVocab()
+      await syncBundledSaetze()
+      // A1/A2 left the bundle; their cards step aside but keep their progress.
+      await archiveUnbundled()
+    })()
+  }
+  return bootOnce
+}
+
 export default function App() {
   const [view, setView] = useState('review')
   const [deck, setDeck] = useState('vocab') // 'vocab' | 'saetze'
@@ -30,14 +56,30 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [released, setReleased] = useState(null) // Set of released verb keys (Sätze)
   const [waitingVerbs, setWaitingVerbs] = useState(0)
+  const [archived, setArchived] = useState(0)
   const [settings, setSettings] = useState({ mode: 'de', topic: 'all', level: 'all' })
+  // Facet selection: { dimension: [values] }. OR inside, AND across.
+  const [facetSel, setFacetSel] = useState({})
+  const [showFilter, setShowFilter] = useState(false)
   const [showInstallHelp, setShowInstallHelp] = useState(false)
   const install = useInstall()
 
   async function refresh() {
     const all = await allCards()
     setCards(all)
+    setArchived(await countArchived())
     return all
+  }
+
+  // Put the archived A1/A2 cards back in rotation, or clear them for good.
+  async function handleArchive(action) {
+    if (action === 'delete') {
+      if (!confirm(`Delete ${archived} archived A1/A2 cards for good? This cannot be undone.`)) return
+      await deleteArchived()
+    } else {
+      await restoreArchived()
+    }
+    await refresh()
   }
 
   // Release the day's new verbs for the Sätze deck (Anki-style new-card pacing).
@@ -57,8 +99,7 @@ export default function App() {
 
   useEffect(() => {
     ;(async () => {
-      await seedIfEmpty()
-      await seedSaetzeIfEmpty()
+      await boot()
       const all = await refresh()
       await runPacer(all)
       setReady(true)
@@ -67,7 +108,7 @@ export default function App() {
   }, [])
 
   const deckCards = useMemo(
-    () => cards.filter((c) => (c.deck || 'vocab') === deck),
+    () => cards.filter((c) => (c.deck || 'vocab') === deck && !c.archived),
     [cards, deck]
   )
 
@@ -79,24 +120,50 @@ export default function App() {
     return deckCards
   }, [deckCards, deck, released])
 
+  // A merged card can belong to more than one level (abholen is A1 and B1).
+  const atLevel = (c, level) =>
+    level === 'all' || c.level === level || (c.levels || []).includes(level)
+
   const topics = useMemo(() => {
-    const scoped =
-      settings.level === 'all' ? deckCards : deckCards.filter((c) => c.level === settings.level)
+    const scoped = deckCards.filter((c) => atLevel(c, settings.level))
     return [...new Set(scoped.map((c) => c.topic))].sort((a, b) => a.localeCompare(b))
   }, [deckCards, settings.level])
 
   const levels = useMemo(
-    () => [...new Set(deckCards.map((c) => c.level).filter(Boolean))].sort(),
+    () => [...new Set(deckCards.flatMap((c) => c.levels?.length ? c.levels : [c.level]).filter(Boolean))].sort(),
     [deckCards]
+  )
+
+  // Which facet values exist within the current level and topic, and how many
+  // cards each covers. Scoped so the counts on the chips tell the truth.
+  const facetIndex = useMemo(() => {
+    const scoped = deckCards.filter(
+      (c) => atLevel(c, settings.level) && (settings.topic === 'all' || c.topic === settings.topic)
+    )
+    return buildIndex(scoped)
+  }, [deckCards, settings.level, settings.topic])
+
+  const facetCount = countSelected(facetSel)
+  const facetMatches = useMemo(
+    () =>
+      deckCards.filter(
+        (c) =>
+          atLevel(c, settings.level) &&
+          (settings.topic === 'all' || c.topic === settings.topic) &&
+          matches(c, facetSel)
+      ).length,
+    [deckCards, settings.level, settings.topic, facetSel]
   )
 
   function changeLevel(level) {
     setSettings((s) => ({ ...s, level, topic: 'all' }))
+    setFacetSel({})
   }
 
   function changeDeck(next) {
     setDeck(next)
     setSettings((s) => ({ ...s, topic: 'all', level: 'all' }))
+    setFacetSel({})
   }
 
   const dueCount = useMemo(
@@ -105,13 +172,16 @@ export default function App() {
         (c) =>
           isDue(c) &&
           (settings.topic === 'all' || c.topic === settings.topic) &&
-          (settings.level === 'all' || c.level === settings.level)
+          atLevel(c, settings.level) &&
+          matches(c, facetSel)
       ).length,
-    [visibleCards, settings.topic, settings.level]
+    [visibleCards, settings.topic, settings.level, facetSel]
   )
 
+  // min-w-0 matters: without it a flex item refuses to shrink below its widest
+  // option, and a long topic name pushes the filter button off the screen.
   const select =
-    'rounded-lg border border-ink/15 bg-paper-card/80 px-2.5 py-1.5 text-sm text-ink-soft focus:outline-none focus:ring-2 focus:ring-brass/40'
+    'min-w-0 rounded-lg border border-ink/15 bg-paper-card/80 px-2.5 py-1.5 text-sm text-ink-soft focus:outline-none focus:ring-2 focus:ring-brass/40'
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -160,18 +230,20 @@ export default function App() {
 
           {view === 'review' && (
             <div className="flex items-center gap-2 mt-2">
-              <select
-                className={select + ' flex-1'}
-                value={settings.level}
-                onChange={(e) => changeLevel(e.target.value)}
-              >
-                <option value="all">All levels</option>
-                {levels.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
+              {levels.length > 1 && (
+                <select
+                  className={select + ' flex-1'}
+                  value={settings.level}
+                  onChange={(e) => changeLevel(e.target.value)}
+                >
+                  <option value="all">All levels</option>
+                  {levels.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              )}
               {deck === 'vocab' ? (
                 <select
                   className={select + ' flex-1'}
@@ -189,6 +261,41 @@ export default function App() {
                 <span className="flex-1 text-center text-xs text-ink-faint px-2 py-1.5 rounded-lg bg-paper-card/60 border border-ink/10">
                   {waitingVerbs} verbs left to unlock
                 </span>
+              )}
+              <button
+                onClick={() => setShowFilter(true)}
+                aria-label="Filter"
+                className={`shrink-0 rounded-lg border px-2.5 py-1.5 text-sm transition active:scale-95 ${
+                  facetCount
+                    ? 'bg-brass text-paper-card border-brass shadow-sm'
+                    : 'bg-paper-card/80 text-ink-soft border-ink/15'
+                }`}
+              >
+                ⚲{facetCount ? ` ${facetCount}` : ''}
+              </button>
+            </div>
+          )}
+
+          {/* Active facets, tap to drop one */}
+          {view === 'review' && facetCount > 0 && (
+            <div className="flex gap-1.5 mt-2 overflow-x-auto pb-0.5 -mx-1 px-1">
+              {Object.entries(facetSel).flatMap(([dim, vals]) =>
+                vals.map((v) => (
+                  <button
+                    key={dim + v}
+                    onClick={() =>
+                      setFacetSel((sel) => {
+                        const next = { ...sel, [dim]: sel[dim].filter((x) => x !== v) }
+                        if (!next[dim].length) delete next[dim]
+                        return next
+                      })
+                    }
+                    className="shrink-0 px-2.5 py-1 rounded-full text-[12px] bg-brass/15 text-brass-deep border border-brass/30"
+                  >
+                    <span className="opacity-60">{DIM_LABEL[dim] || dim}: </span>
+                    {v} ✕
+                  </button>
+                ))
               )}
             </div>
           )}
@@ -211,12 +318,19 @@ export default function App() {
             dailyNew={DAILY_NEW_VERBS}
             topic={settings.topic}
             level={settings.level}
+            facetSel={facetSel}
             mode={settings.mode}
             onSettings={(patch) => setSettings((s) => ({ ...s, ...patch }))}
             onReviewed={refresh}
           />
         ) : view === 'manage' ? (
-          <ManageView deck={deck} cards={deckCards} onChanged={refresh} />
+          <ManageView
+            deck={deck}
+            cards={deckCards}
+            archived={archived}
+            onArchive={handleArchive}
+            onChanged={refresh}
+          />
         ) : (
           <StatsView
             deck={deck}
@@ -226,6 +340,16 @@ export default function App() {
           />
         )}
       </main>
+
+      {showFilter && (
+        <FilterSheet
+          index={facetIndex}
+          selected={facetSel}
+          matchCount={facetMatches}
+          onChange={setFacetSel}
+          onClose={() => setShowFilter(false)}
+        />
+      )}
 
       {/* Bottom nav */}
       <nav className="safe-bottom sticky bottom-0 z-30 bg-paper-card/90 backdrop-blur border-t border-ink/10">

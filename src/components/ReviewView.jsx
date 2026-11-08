@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import Flashcard from './Flashcard.jsx'
 import { applyAnswer, isDue } from '../lib/leitner.js'
 import { applyPacing } from '../lib/pacing.js'
+import { matches } from '../lib/facets.js'
 import { updateCard } from '../lib/db.js'
 
 const MODES = [
@@ -18,6 +19,7 @@ export default function ReviewView({
   deck,
   topic,
   level,
+  facetSel,
   mode,
   onSettings,
   onReviewed,
@@ -35,9 +37,10 @@ export default function ReviewView({
       (c) =>
         isDue(c) &&
         (topic === 'all' || c.topic === topic) &&
-        (level === 'all' || c.level === level)
+        (level === 'all' || c.level === level || (c.levels || []).includes(level)) &&
+        matches(c, facetSel || {})
     )
-  }, [cards, releasedSet, topic, level])
+  }, [cards, releasedSet, topic, level, facetSel])
 
   function startSession() {
     // shuffle
@@ -51,7 +54,7 @@ export default function ReviewView({
   useEffect(() => {
     startSession()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topic, level, releasedSet])
+  }, [topic, level, facetSel, releasedSet])
 
   async function handleAnswer(correct) {
     const card = queue[idx]

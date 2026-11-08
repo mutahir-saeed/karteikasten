@@ -10,20 +10,30 @@ const LANG_META = {
 const FIELD = { de: 'german', en: 'english', ur: 'urdu' }
 
 // Resolve which languages sit on the front vs. back for a given card + mode.
+//
+// Not every card has all three languages: the B1 verb sheets ship German and
+// English only. A card with no Urdu must never end up with a blank front, so
+// the Urdu modes fall back to German for it and Mixed only ever picks a
+// language the card actually has.
 export function facesForCard(card, mode) {
+  const has = (l) => Boolean(card[FIELD[l]])
   let frontLangs
   if (mode === 'de') frontLangs = ['de']
   else if (mode === 'en') frontLangs = ['en']
-  else if (mode === 'ur') frontLangs = ['ur']
-  else if (mode === 'enur') frontLangs = ['en', 'ur']
+  else if (mode === 'ur') frontLangs = has('ur') ? ['ur'] : ['de']
+  else if (mode === 'enur') frontLangs = has('ur') ? ['en', 'ur'] : ['en']
   else {
-    // mixed: deterministic per-card random front language
-    const langs = ['de', 'en', 'ur']
-    const seed = [...card.id].reduce((a, c) => a + c.charCodeAt(0), 0)
-    frontLangs = [langs[seed % 3]]
+    // mixed: deterministic per-card front language, drawn from what it has
+    const pool = ['de', 'en', 'ur'].filter(has)
+    const langs = pool.length ? pool : ['de']
+    const seed = [...String(card.id)].reduce((a, c) => a + c.charCodeAt(0), 0)
+    frontLangs = [langs[seed % langs.length]]
   }
-  const backLangs = ['de', 'en', 'ur'].filter((l) => !frontLangs.includes(l))
-  return { frontLangs, backLangs }
+  const rest = ['de', 'en', 'ur'].filter((l) => !frontLangs.includes(l))
+  // Only show the languages this card actually carries, so a missing Urdu is
+  // simply absent rather than an empty ruled line.
+  const present = rest.filter(has)
+  return { frontLangs, backLangs: present.length ? present : rest }
 }
 
 // Scale text down as it gets longer so full sentences still fit the card.
@@ -61,6 +71,51 @@ function LangLine({ lang, text, big }) {
       >
         {text}
       </div>
+    </div>
+  )
+}
+
+// Präteritum / Partizip, the fixed preposition and the two grouping tags.
+// These come off the grammar sheets and are what turns a word card into
+// something you can actually conjugate.
+const TAG_ORDER = ['praep', 'fall', 'muster', 'perfekt', 'familie', 'feld', 'lektion']
+const TAG_STYLE = {
+  praep: 'bg-brass/15 text-brass-deep border-brass/30',
+  fall: 'bg-brass/15 text-brass-deep border-brass/30',
+  muster: 'bg-felt/10 text-felt border-felt/30',
+  perfekt: 'bg-felt/10 text-felt border-felt/30',
+}
+
+function CardExtras({ card }) {
+  const tags = []
+  for (const dim of TAG_ORDER) {
+    for (const v of card.facets?.[dim] || []) tags.push({ dim, v })
+  }
+  if (!card.forms && !card.note && !tags.length) return null
+  return (
+    <div className="mt-1 flex flex-col gap-2">
+      {card.forms && (
+        <div className="font-sans text-[13px] text-ink-soft tracking-wide">{card.forms}</div>
+      )}
+      {tags.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {tags.slice(0, 4).map(({ dim, v }) => (
+            <span
+              key={dim + v}
+              className={`px-1.5 py-0.5 rounded text-[10.5px] border ${
+                TAG_STYLE[dim] || 'bg-paper-deep/70 text-ink-faint border-ink/10'
+              }`}
+            >
+              {v}
+            </span>
+          ))}
+        </div>
+      )}
+      {card.note && (
+        <div className="font-sans text-[11.5px] leading-snug text-ink-faint italic">
+          {card.note}
+        </div>
+      )}
     </div>
   )
 }
@@ -180,6 +235,7 @@ export default function Flashcard({ card, mode, onAnswer }) {
                 {backLangs.map((l) => (
                   <LangLine key={l} lang={l} text={card[FIELD[l]]} big />
                 ))}
+                <CardExtras card={card} />
               </div>
             )}
           </div>

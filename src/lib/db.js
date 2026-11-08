@@ -29,6 +29,126 @@ db.version(2)
       })
   })
 
+// v3 adds the facet model: `facets` (dimension -> values, from the Tags
+// column), `levels` (a word can sit in A1 and B1 at once), plus `forms` and
+// `note` from the grammar sheets. Existing cards are backfilled so nothing has
+// to be re-seeded and no progress is lost.
+db.version(3)
+  .stores({
+    cards: 'id, box, topic, level, dueDate, type, deck',
+    meta: 'key',
+  })
+  .upgrade(async (tx) => {
+    await tx
+      .table('cards')
+      .toCollection()
+      .modify((c) => {
+        if (!c.facets) c.facets = {}
+        if (!c.levels) c.levels = c.level ? [c.level] : []
+        if (c.forms == null) c.forms = ''
+        if (c.note == null) c.note = ''
+      })
+  })
+
+const wordKey = (c) => (c.german || '').trim().toLowerCase()
+
+// Pick up deck files added by an app update, without disturbing progress.
+//
+// seedIfEmpty only ever runs on a fresh install, so on an existing phone a new
+// CSV would otherwise never appear. This adds the cards that aren't there yet
+// and refreshes the teaching data (facets, forms, note, topic) on the ones that
+// are. Box, dueDate and lastReviewed are the user's and are never touched.
+export async function syncBundledVocab() {
+  const bundled = loadBundledCards()
+  if (!bundled.length) return { added: 0, updated: 0 }
+  const existing = await db.cards.where('deck').equals('vocab').toArray()
+  const byWord = new Map()
+  for (const c of existing) {
+    const k = wordKey(c)
+    if (!byWord.has(k)) byWord.set(k, c) // older installs may hold duplicates
+  }
+  const fresh = []
+  const touched = []
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+  for (const b of bundled) {
+    const cur = byWord.get(wordKey(b))
+    if (!cur) {
+      fresh.push(b)
+      continue
+    }
+    const patch = {}
+    if (!same(cur.facets, b.facets)) patch.facets = b.facets
+    if (!same(cur.levels, b.levels)) patch.levels = b.levels
+    if ((cur.forms || '') !== b.forms) patch.forms = b.forms
+    if ((cur.note || '') !== b.note) patch.note = b.note
+    if (b.level && b.level !== cur.level) patch.level = b.level
+    if (b.english && b.english !== cur.english) patch.english = b.english
+    if (b.urdu && !cur.urdu) patch.urdu = b.urdu
+    if (b.topic && b.topic !== 'Uncategorized' && b.topic !== cur.topic) patch.topic = b.topic
+    if (b.seq != null && cur.seq !== b.seq) patch.seq = b.seq
+    if (Object.keys(patch).length) touched.push({ ...cur, ...patch })
+  }
+  // bulkPut, not bulkAdd: these ids are new, and putting them twice is a
+  // no-op rather than a duplicate.
+  if (fresh.length) await db.cards.bulkPut(fresh)
+  if (touched.length) await db.cards.bulkPut(touched)
+  return { added: fresh.length, updated: touched.length }
+}
+
+// Same idea for the Sätze deck. Its ids are content-derived, so "already
+// there" is just an id check — and only missing ones are added, because a
+// bulkPut would reset the box and due date of a sentence already in rotation.
+export async function syncBundledSaetze() {
+  const bundled = loadSaetzeCards()
+  if (!bundled.length) return { added: 0 }
+  const ids = new Set(await db.cards.where('deck').equals('saetze').primaryKeys())
+  const fresh = bundled.filter((c) => !ids.has(c.id))
+  if (fresh.length) await db.cards.bulkPut(fresh)
+  return { added: fresh.length }
+}
+
+// Cards whose deck file is no longer bundled.
+//
+// Dropping a CSV from the repo does nothing to a phone that already seeded it,
+// so those cards would linger forever. They are archived rather than deleted:
+// months of boxes and due dates should survive a change of syllabus, and
+// Manage can restore or clear them later. Only cards from the named levels are
+// touched, so anything you added yourself is left alone.
+export async function archiveUnbundled(levels = ['A1', 'A2']) {
+  const words = new Set(loadBundledCards().map(wordKey))
+  const saetzeIds = new Set(loadSaetzeCards().map((c) => c.id))
+  const touched = []
+  for (const c of await db.cards.toArray()) {
+    if (c.archived) continue
+    const stillBundled =
+      c.deck === 'saetze' ? saetzeIds.has(c.id) : words.has(wordKey(c))
+    if (stillBundled) continue
+    const from = c.levels?.length ? c.levels : [c.level]
+    if (!from.some((l) => levels.includes(l))) continue
+    touched.push({ ...c, archived: true })
+  }
+  if (touched.length) await db.cards.bulkPut(touched)
+  return touched.length
+}
+
+export async function countArchived() {
+  return db.cards.filter((c) => Boolean(c.archived)).count()
+}
+
+export async function restoreArchived() {
+  const archived = await db.cards.filter((c) => Boolean(c.archived)).toArray()
+  if (archived.length) {
+    await db.cards.bulkPut(archived.map(({ archived: _drop, ...c }) => c))
+  }
+  return archived.length
+}
+
+export async function deleteArchived() {
+  const ids = await db.cards.filter((c) => Boolean(c.archived)).primaryKeys()
+  if (ids.length) await db.cards.bulkDelete(ids)
+  return ids.length
+}
+
 // Seed the bundled word deck the first time the app runs. Idempotent.
 export async function seedIfEmpty() {
   const seeded = await db.meta.get('seeded')
@@ -37,7 +157,8 @@ export async function seedIfEmpty() {
 
   if (vocabCount === 0) {
     const cards = loadBundledCards()
-    if (cards.length) await db.cards.bulkAdd(cards)
+    // bulkPut + deterministic ids => safe if this races with itself.
+    if (cards.length) await db.cards.bulkPut(cards)
     await db.meta.put({ key: 'seeded', value: true, at: new Date().toISOString() })
     return { seeded: true, count: cards.length }
   }
