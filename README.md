@@ -8,14 +8,17 @@ spaced-repetition system. Installable as a PWA on your phone, works fully offlin
 - **Leitner boxes 1–5** — correct answer promotes a card, wrong answer resets it to Box 1.
   Review intervals: 1, 2, 4, 8, 16 days.
 - **Auto-loaded decks** — every CSV under `src/decks/<LEVEL>` is bundled and seeded
-  into the on-device database on first launch (~2800 cards). New deck files added
-  by an app update are synced in on next launch without touching your progress.
-  Cards merge by German word, so a verb that appears in A1 *and* in a B1 grammar
-  sheet is one card carrying both levels and all of its tags.
+  into the on-device database on first launch (1,930 B1 cards). New deck files
+  added by an app update are synced in on next launch without touching your
+  progress, and cards merge by German word, so one word is always one card.
+- **Archive** — the A1 and A2 decks were retired in favour of B1. On a phone that
+  already had them, their cards are archived rather than deleted: boxes and due
+  dates are kept, and **Manage → Archiv** restores or clears them. A word that
+  also appears in the B1 deck simply carries its old progress over.
 - **Swipe to grade** — tap a card to reveal the other two languages, then
   **swipe left = correct**, **swipe right = wrong** (or use the buttons).
 - **Direction modes** — DE→EN/UR, EN/UR→DE, EN→DE, UR→DE, or Mixed.
-- **Filters** — study by level (A1/A2/B1) and topic, plus **facet filters**: a verb
+- **Filters** — study by topic, plus **facet filters**: a verb
   carries every group it belongs to at once (`anfangen` is trennbar, prefix an-,
   strong with the pattern a → ie → a, word family *fangen*, meaning field
   *Anfangen und aufhören*), and the filter sheet combines them — OR inside a

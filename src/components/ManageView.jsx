@@ -34,7 +34,7 @@ function newCard(fields, deck) {
   )
 }
 
-export default function ManageView({ deck = 'vocab', cards, onChanged }) {
+export default function ManageView({ deck = 'vocab', cards, archived = 0, onArchive, onChanged }) {
   const isSaetze = deck === 'saetze'
   const fileRef = useRef(null)
   const restoreRef = useRef(null)
@@ -305,6 +305,31 @@ export default function ManageView({ deck = 'vocab', cards, onChanged }) {
           </button>
         </form>
       </section>
+
+      {/* Archived decks: A1/A2 left the bundle, their progress did not */}
+      {archived > 0 && (
+        <section className="rounded-2xl bg-paper-deep/60 ring-1 ring-ink/10 p-4">
+          <h2 className="font-display text-xl text-ink mb-1">Archiv</h2>
+          <p className="text-sm text-ink-soft mb-3">
+            {archived} A1/A2 cards are set aside so the B1 deck has the stage to itself.
+            Their boxes and due dates are kept, so putting them back costs nothing.
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => onArchive?.('restore')}
+              className="text-sm px-3 py-1.5 rounded-lg border border-ink/20 text-ink-soft active:scale-95 transition"
+            >
+              Restore them
+            </button>
+            <button
+              onClick={() => onArchive?.('delete')}
+              className="text-sm px-3 py-1.5 rounded-lg border border-rust/40 text-rust active:scale-95 transition"
+            >
+              Delete for good
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Deck list */}
       <section className="rounded-2xl bg-paper-card/70 ring-1 ring-ink/10 p-4">

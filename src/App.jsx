@@ -8,6 +8,10 @@ import {
   seedSaetzeIfEmpty,
   syncBundledVocab,
   syncBundledSaetze,
+  archiveUnbundled,
+  countArchived,
+  restoreArchived,
+  deleteArchived,
   allCards,
   getPacerState,
   savePacerState,
@@ -38,6 +42,8 @@ function boot() {
       // Deck files added by an app update land here, progress untouched.
       await syncBundledVocab()
       await syncBundledSaetze()
+      // A1/A2 left the bundle; their cards step aside but keep their progress.
+      await archiveUnbundled()
     })()
   }
   return bootOnce
@@ -50,6 +56,7 @@ export default function App() {
   const [ready, setReady] = useState(false)
   const [released, setReleased] = useState(null) // Set of released verb keys (Sätze)
   const [waitingVerbs, setWaitingVerbs] = useState(0)
+  const [archived, setArchived] = useState(0)
   const [settings, setSettings] = useState({ mode: 'de', topic: 'all', level: 'all' })
   // Facet selection: { dimension: [values] }. OR inside, AND across.
   const [facetSel, setFacetSel] = useState({})
@@ -60,7 +67,19 @@ export default function App() {
   async function refresh() {
     const all = await allCards()
     setCards(all)
+    setArchived(await countArchived())
     return all
+  }
+
+  // Put the archived A1/A2 cards back in rotation, or clear them for good.
+  async function handleArchive(action) {
+    if (action === 'delete') {
+      if (!confirm(`Delete ${archived} archived A1/A2 cards for good? This cannot be undone.`)) return
+      await deleteArchived()
+    } else {
+      await restoreArchived()
+    }
+    await refresh()
   }
 
   // Release the day's new verbs for the Sätze deck (Anki-style new-card pacing).
@@ -89,7 +108,7 @@ export default function App() {
   }, [])
 
   const deckCards = useMemo(
-    () => cards.filter((c) => (c.deck || 'vocab') === deck),
+    () => cards.filter((c) => (c.deck || 'vocab') === deck && !c.archived),
     [cards, deck]
   )
 
@@ -211,18 +230,20 @@ export default function App() {
 
           {view === 'review' && (
             <div className="flex items-center gap-2 mt-2">
-              <select
-                className={select + ' flex-1'}
-                value={settings.level}
-                onChange={(e) => changeLevel(e.target.value)}
-              >
-                <option value="all">All levels</option>
-                {levels.map((l) => (
-                  <option key={l} value={l}>
-                    {l}
-                  </option>
-                ))}
-              </select>
+              {levels.length > 1 && (
+                <select
+                  className={select + ' flex-1'}
+                  value={settings.level}
+                  onChange={(e) => changeLevel(e.target.value)}
+                >
+                  <option value="all">All levels</option>
+                  {levels.map((l) => (
+                    <option key={l} value={l}>
+                      {l}
+                    </option>
+                  ))}
+                </select>
+              )}
               {deck === 'vocab' ? (
                 <select
                   className={select + ' flex-1'}
@@ -303,7 +324,13 @@ export default function App() {
             onReviewed={refresh}
           />
         ) : view === 'manage' ? (
-          <ManageView deck={deck} cards={deckCards} onChanged={refresh} />
+          <ManageView
+            deck={deck}
+            cards={deckCards}
+            archived={archived}
+            onArchive={handleArchive}
+            onChanged={refresh}
+          />
         ) : (
           <StatsView
             deck={deck}

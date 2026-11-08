@@ -81,6 +81,7 @@ export async function syncBundledVocab() {
     if (!same(cur.levels, b.levels)) patch.levels = b.levels
     if ((cur.forms || '') !== b.forms) patch.forms = b.forms
     if ((cur.note || '') !== b.note) patch.note = b.note
+    if (b.level && b.level !== cur.level) patch.level = b.level
     if (b.english && b.english !== cur.english) patch.english = b.english
     if (b.urdu && !cur.urdu) patch.urdu = b.urdu
     if (b.topic && b.topic !== 'Uncategorized' && b.topic !== cur.topic) patch.topic = b.topic
@@ -104,6 +105,48 @@ export async function syncBundledSaetze() {
   const fresh = bundled.filter((c) => !ids.has(c.id))
   if (fresh.length) await db.cards.bulkPut(fresh)
   return { added: fresh.length }
+}
+
+// Cards whose deck file is no longer bundled.
+//
+// Dropping a CSV from the repo does nothing to a phone that already seeded it,
+// so those cards would linger forever. They are archived rather than deleted:
+// months of boxes and due dates should survive a change of syllabus, and
+// Manage can restore or clear them later. Only cards from the named levels are
+// touched, so anything you added yourself is left alone.
+export async function archiveUnbundled(levels = ['A1', 'A2']) {
+  const words = new Set(loadBundledCards().map(wordKey))
+  const saetzeIds = new Set(loadSaetzeCards().map((c) => c.id))
+  const touched = []
+  for (const c of await db.cards.toArray()) {
+    if (c.archived) continue
+    const stillBundled =
+      c.deck === 'saetze' ? saetzeIds.has(c.id) : words.has(wordKey(c))
+    if (stillBundled) continue
+    const from = c.levels?.length ? c.levels : [c.level]
+    if (!from.some((l) => levels.includes(l))) continue
+    touched.push({ ...c, archived: true })
+  }
+  if (touched.length) await db.cards.bulkPut(touched)
+  return touched.length
+}
+
+export async function countArchived() {
+  return db.cards.filter((c) => Boolean(c.archived)).count()
+}
+
+export async function restoreArchived() {
+  const archived = await db.cards.filter((c) => Boolean(c.archived)).toArray()
+  if (archived.length) {
+    await db.cards.bulkPut(archived.map(({ archived: _drop, ...c }) => c))
+  }
+  return archived.length
+}
+
+export async function deleteArchived() {
+  const ids = await db.cards.filter((c) => Boolean(c.archived)).primaryKeys()
+  if (ids.length) await db.cards.bulkDelete(ids)
+  return ids.length
 }
 
 // Seed the bundled word deck the first time the app runs. Idempotent.
