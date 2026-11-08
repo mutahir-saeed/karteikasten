@@ -7,12 +7,23 @@ spaced-repetition system. Installable as a PWA on your phone, works fully offlin
 
 - **Leitner boxes 1–5** — correct answer promotes a card, wrong answer resets it to Box 1.
   Review intervals: 1, 2, 4, 8, 16 days.
-- **Auto-loaded decks** — every CSV under `src/decks/A1` and `src/decks/A2` is bundled and
-  seeded into the on-device database on first launch (2200+ cards, 28 topics).
+- **Auto-loaded decks** — every CSV under `src/decks/<LEVEL>` is bundled and seeded
+  into the on-device database on first launch (~2800 cards). New deck files added
+  by an app update are synced in on next launch without touching your progress.
+  Cards merge by German word, so a verb that appears in A1 *and* in a B1 grammar
+  sheet is one card carrying both levels and all of its tags.
 - **Swipe to grade** — tap a card to reveal the other two languages, then
   **swipe left = correct**, **swipe right = wrong** (or use the buttons).
 - **Direction modes** — DE→EN/UR, EN/UR→DE, EN→DE, UR→DE, or Mixed.
-- **Filters** — study by level (A1/A2) and topic.
+- **Filters** — study by level (A1/A2/B1) and topic, plus **facet filters**: a verb
+  carries every group it belongs to at once (`anfangen` is trennbar, prefix an-,
+  strong with the pattern a → ie → a, word family *fangen*, meaning field
+  *Anfangen und aufhören*), and the filter sheet combines them — OR inside a
+  dimension, AND across dimensions.
+- **Grouped learning** — the B1 deck is tagged by **Bedeutungsfeld** (55 meaning
+  fields), **Wortfamilie** (103 root families), Struktur, Vorsilbe, Präposition +
+  Fall, Vokalmuster, Perfekt mit haben/sein, Stufe and **Lektion**, so a session
+  can be "all 17 verbs built on *nehmen*" or "Kurs DaF Lektion 4".
 - **Stats** — cards per box, due-today count, mastered count, and a "words to watch" list.
 - **Backup & restore** — export/import your progress as a JSON file.
 - **Offline PWA** — the whole app and your deck work with no internet after first load.
@@ -42,6 +53,14 @@ Regenerate app icons after changing the design: `npm run icons`.
 4. Open the resulting URL on your phone → browser menu → **Add to Home Screen**.
 
 Every `git push` to `main` redeploys automatically.
+
+## Deck format
+
+`German,English,Urdu,Category,Tags,Forms,Note` (Sätze files use
+`German,English,Urdu,Category,Lemma,Type`). `Category` is the meaning field and
+feeds the topic dropdown; `Tags` is a `;`-separated list of `dimension:value`
+pairs and feeds the filter sheet; `Forms` holds Präteritum and Partizip II.
+Dimensions are defined in `src/lib/facets.js`.
 
 ## Tech
 
